@@ -1,0 +1,11 @@
+services:
+  web:
+    image: node:20.19.4-slim
+    ports:
+      - 3009:3000
+    privileged: true
+    platform: linux/x86_64
+    tty: true
+    volumes:
+      - .:/work
+    working_dir: /work
