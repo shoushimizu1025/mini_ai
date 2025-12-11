@@ -1,6 +1,6 @@
 services:
   web:
-    image: node:20.19.4-slim
+    image: node:20
     ports:
       - 3009:3000
     privileged: true

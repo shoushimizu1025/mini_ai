@@ -4,7 +4,7 @@ import { defineNuxtPlugin } from '#app';
 // setGlobalEngine をインポートに追加
 import { useLLMGlobalStore, setGlobalEngine } from '~/composables/useLocalLLM'; 
 // 🚨 パッケージ管理へ移行 (@mlc-ai/web-llm を npm install している前提)
-import * as webllm from '@mlc-ai/web-llm'; 
+import * as webllm from '@mlc-ai/web-llm';
 
 let hasLLMInitialized = false; 
 

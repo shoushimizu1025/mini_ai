@@ -1,5 +1,4 @@
 import compression from 'vite-plugin-compression'
-// pathモジュールは不要になりました
 
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
@@ -47,7 +46,6 @@ export default defineNuxtConfig({
     routeRules: {
       '/**': {
         headers: {
-          // 本番ビルド環境用ヘッダー
           'Cross-Origin-Embedder-Policy': 'require-corp',
           'Cross-Origin-Opener-Policy': 'same-origin',
         },
@@ -59,23 +57,35 @@ export default defineNuxtConfig({
     worker: {
       format: "es"
     },
-    // 【維持】モジュール解決のエイリアスは削除されました
     
-    // 【✅ Wasm競合回避】Vite開発サーバーのヘッダーをフックで強制上書き
+    resolve: {
+        alias: {
+            // ★【最優先】DuckDB Wasmのインポートをブラウザ版に強制エイリアス
+            
+            // Node.jsのコアモジュールをスタブ化
+            'worker_threads': 'worker-threads-stub', 
+            'fs': 'fs-stub',
+            'url': 'url-stub',
+            
+            // ONNX Runtime の問題を解決
+            'onnxruntime-node': 'onnxruntime-web', 
+        }
+    },
     server: {
       headers: {
         'Cross-Origin-Embedder-Policy': 'require-corp',
         'Cross-Origin-Opener-Policy': 'same-origin',
       }
     },
-    // Wasmファイルの静的アセット処理を指示
     assetsInclude: [
       '**/*.wasm', 
       '**/*.json'
     ],
-    // 開発時の依存関係の最適化から除外
     optimizeDeps: {
-      exclude: ['@mlc-ai/web-llm']
+      exclude: [
+        '@mlc-ai/web-llm', 
+        '@duckdb/duckdb-wasm' 
+      ] 
     },
     plugins: [
       compression({
@@ -95,16 +105,24 @@ export default defineNuxtConfig({
           drop_console: true,
         },
       },
-      // Wasmファイルをインライン化せず、純粋なURLとして扱う
       assetsInlineLimit: 0, 
       rollupOptions: {
-        // 全てのバンドルから除外
-        external: ['@mlc-ai/web-llm'],
+        // 全てのNode.jsネイティブ依存を外部化（バンドルから除外）
+        external: [
+          '@mlc-ai/web-llm', 
+          'worker_threads', 
+          'url',
+          'fs',
+          'onnxruntime-node', 
+          'better-sqlite3' // veqlite経由の依存を排除
+        ], 
         output: {
           manualChunks: (id) => {
-            // WebLLMのファイルを独自のチャンクに隔離し、メインバンドルへの注入を防ぐ
             if (id.includes('@mlc-ai/web-llm')) {
               return 'web-llm-vendor';
+            }
+            if (id.includes('@duckdb/duckdb-wasm')) {
+              return 'duckdb-wasm-vendor';
             }
           }
         }
@@ -124,27 +142,10 @@ export default defineNuxtConfig({
       display: "standalone",
       background_color: "#ffffff",
       icons: [
-        {
-          "src": "64-2.png",
-          "sizes": "64x64",
-          "type": "image/png"
-        },
-        {
-          "src": "192-2.png",
-          "sizes": "192x192",
-          "type": "image/png"
-        },
-        {
-          "src": "icon-2.png",
-          "sizes": "512x512",
-          "type": "image/png"
-        },
-        {
-          "src": "icon-2.png",
-          "sizes": "512x512",
-          "type": "image/png",
-          "purpose": "maskable"
-        }
+        { "src": "64-2.png", "sizes": "64x64", "type": "image/png" },
+        { "src": "192-2.png", "sizes": "192x192", "type": "image/png" },
+        { "src": "icon-2.png", "sizes": "512x512", "type": "image/png" },
+        { "src": "icon-2.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
       ],
     },
     workbox: {
