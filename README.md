@@ -60,3 +60,19 @@ devtoolからCache Storageは確認できる。
 
 こちらのzenn記事にも同様のことが書いてあった。
 https://zenn.dev/srefin/articles/17ba278f402b5d
+
+## RAGについて
+
+WebLLMは非常に少ないトークン制約がある。
+
+膨大なプロンプトで制御をかけたりせず、効率的に処理させる立ち回りが必要。
+
+記憶の領域で、RAG（ラス）という考え方を取り入れて、膨大な記憶から効率的に関連する情報だけを集約。
+
+### 単体コンポーネントによるRAGの実装
+
+components/testRag.vue
+
+### TypeScriptに独自エンジンを搭載したコンポーネントによるRAGの実装
+
+components/testWebRagEngine.vue
