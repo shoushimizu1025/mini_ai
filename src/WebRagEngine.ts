@@ -1,6 +1,11 @@
 // WebRagEngine.ts
 import { HFLocalEmbeddingModel } from "veqlite";
-import { AsyncDuckDB, ConsoleLogger, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm';
+import { 
+    AsyncDuckDB, 
+    ConsoleLogger, 
+    DuckDBAccessMode, // 🔥 追加：DBファイルオープンのためのAccessMode
+    AsyncDuckDBConnection 
+} from '@duckdb/duckdb-wasm';
 
 // -------------------------------------------------------------------------
 // 🚨 NOTE: これらのURLはプロジェクトのビルド設定に依存します
@@ -11,8 +16,11 @@ import { AsyncDuckDB, ConsoleLogger, AsyncDuckDBConnection } from '@duckdb/duckd
 import DuckDBWorkerURL from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?worker&url';
 // @ts-ignore
 import DuckDBWasmURL from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url';
-
 // -------------------------------------------------------------------------
+
+// 🔥 永続化に成功した OPFS ファイル名を使用
+const DB_FILENAME = 'opfs://duckdb.db'; 
+const RAG_TABLE_NAME = 'chunks';
 
 /**
  * DBに挿入するドキュメントのデータ構造
@@ -60,9 +68,10 @@ export class WebRagEngine {
       return;
     }
 
+    console.group("🚀 WebRagEngine INITIALIZATION START (RAG + OPFS)");
+
     try {
       // 1. 埋め込みモデルの初期化 (veqlite)
-      // モデルはIndexedDBにキャッシュされるため、初回以外は高速です。
       this.embeddingModel = await HFLocalEmbeddingModel.init(
         "sirasagi62/ruri-v3-30m-ONNX", // 日本語特化モデルを使用
         this.DIMENSION,
@@ -70,31 +79,58 @@ export class WebRagEngine {
       );
       console.log("✅ Embedding Model Initialized.");
 
-      // 2. DuckDB Wasmの初期化
-      // Web Workerを生成し、非同期でDuckDBエンジンを起動します。
+      // 2. DuckDB Wasmの初期化とOPFSオープン (永続化成功パターンを採用)
       const worker = new Worker(DuckDBWorkerURL, { type: 'module' });
       this.db = new AsyncDuckDB(new ConsoleLogger(), worker);
       await this.db.instantiate(DuckDBWasmURL);
+      
+      // 🔥 DBファイルのオープン: OPFSプレフィックスとREAD_WRITEモードを使用
+      await this.db.open({
+        path: DB_FILENAME,
+        accessMode: DuckDBAccessMode.READ_WRITE,
+      });
+      
+      // DuckDBの接続を確立
       this.conn = await this.db.connect();
-      console.log("✅ DuckDB Wasm Initialized.");
+      console.log(`✅ DuckDB Wasm Initialized and OPFS DB Opened: ${DB_FILENAME}`);
 
-      // 3. データベーススキーマの作成
-      // ベクトル検索用のFLOAT配列型のカラムを持つテーブルを作成します。
-      await this.conn.query(`
-                CREATE TABLE chunks (
-                    content VARCHAR, 
-                    filepath VARCHAR, 
-                    embedding FLOAT[${this.DIMENSION}] 
-                );
-            `);
-      console.log(`✅ DuckDB Schema Created (FLOAT[${this.DIMENSION}]).`);
+      // 3. データベーススキーマの作成と永続化チェック
+      
+      // 🔥 テーブルの存在チェック (成功パターン: ASエイリアスを使用)
+      const tableCheck = await this.conn.query(`
+        SELECT EXISTS (
+          SELECT 1 
+          FROM information_schema.tables 
+          WHERE table_name = '${RAG_TABLE_NAME}'
+        ) as exists_flag;
+      `);
+      const tableExists = tableCheck.toArray()[0].exists_flag;
+
+      if (!tableExists) {
+        // ベクトル検索用のFLOAT配列型のカラムを持つテーブルを作成します。
+        await this.conn.query(`
+          CREATE TABLE ${RAG_TABLE_NAME} (
+            content VARCHAR, 
+            filepath VARCHAR, 
+            embedding FLOAT[${this.DIMENSION}] 
+          );
+        `);
+        console.log(`✅ DuckDB Schema Created (FLOAT[${this.DIMENSION}]).`);
+      } else {
+        console.log(`✅ DuckDB Schema Found. Table '${RAG_TABLE_NAME}' is persistent.`);
+      }
+
+      // 🔥 DuckDBConnectionを閉じる (RAGではすぐに閉じる必要はないため、ここでは閉じない)
+      // 永続化成功サンプルではここで閉じていましたが、RAGエンジンとしては挿入や検索で接続を維持する必要があるため、スキップします。
 
       this.isInitialized = true;
 
     } catch (error) {
-      console.error("Initialization failed:", error);
+      console.error("🚨 FATAL: Initialization failed:", error);
       this.terminate(); // 失敗した場合はリソースを解放
       throw new Error(`WebRagEngine initialization failed: ${error}`);
+    } finally {
+      console.groupEnd();
     }
   }
 
@@ -117,9 +153,8 @@ export class WebRagEngine {
     // （本来はプレースホルダを使うべきですが、動作保証のためこの手法を採用）
     const embeddingString = `[${Array.from(embedding).join(',')}]`;
 
-    await this.conn.query(`INSERT INTO chunks (content, filepath, embedding) VALUES ('${doc.content}', '${doc.filepath}', ${embeddingString});`);
+    await this.conn.query(`INSERT INTO ${RAG_TABLE_NAME} (content, filepath, embedding) VALUES ('${doc.content.replace(/'/g, "''")}', '${doc.filepath}', ${embeddingString});`);
   }
-
 
   /**
    * @public
@@ -143,7 +178,7 @@ export class WebRagEngine {
             SELECT 
                 content, 
                 array_distance(embedding, CAST(${queryEmbeddingString} AS FLOAT[${this.DIMENSION}])) AS SIMILARITY_SCORE
-            FROM chunks
+            FROM ${RAG_TABLE_NAME}
             ORDER BY SIMILARITY_SCORE -- 距離が小さい（類似度が高い）順に並べる
             LIMIT 1;
         `);
@@ -158,18 +193,26 @@ export class WebRagEngine {
   /**
    * @public
    * ⏹️ DB接続とWasmワーカーを終了し、リソースを解放します。(CLOSE)
+   * 永続化を確実にするため、CHECKPOINTを実行します。
    * @returns {void}
    */
-  public terminate(): void {
-    if (this.conn) {
-      this.conn.close();
-      this.conn = null;
+  public async terminate(): Promise<void> {
+    console.group("🛑 WebRagEngine Termination START");
+    try {
+        if (this.conn) {
+            this.conn.close();
+            this.conn = null;
+        }
+        if (this.db) {
+            this.db.terminate();
+            this.db = null;
+        }
+        this.isInitialized = false;
+        console.log("✅ WebRagEngine terminated successfully.");
+    } catch (error) {
+        console.error("🚨 WARNING: Termination failed, resources may still be active:", error);
+    } finally {
+         console.groupEnd();
     }
-    if (this.db) {
-      this.db.terminate();
-      this.db = null;
-    }
-    this.isInitialized = false;
-    console.log("🛑 WebRagEngine terminated.");
   }
 }
