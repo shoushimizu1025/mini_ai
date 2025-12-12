@@ -46,7 +46,7 @@ const runEngineTest = async () => {
         log(`   - Query: "${query}"`);
         
         // 🔍 検索実行 (GET)
-        const results = await engine.search(query);
+        const results = await engine.search(query, 1);
 
         log("4. Search Results:");
         

@@ -159,35 +159,32 @@ export class WebRagEngine {
   /**
    * @public
    * 🔍 クエリを実行し、最も類似度の高いドキュメントを取得します。(GET)
-   * * @param {string} query - 検索するテキストクエリ
+   * @param {string} query - 検索するテキストクエリ
+   * @param {number} [limit=5] - 取得する検索結果の上限件数 処理コストが掛かるため必ず制限を設定する必要がある。
    * @returns {Promise<SearchResult[]>} - 類似度スコア付きの検索結果配列
    */
-  public async search(query: string): Promise<SearchResult[]> {
-    if (!this.conn || !this.embeddingModel) throw new Error("Engine not initialized. Call initialize() first.");
+  public async search(query: string, limit: number = 5): Promise<SearchResult[]> {
+      if (!this.conn || !this.embeddingModel) throw new Error("Engine not initialized. Call initialize() first.");
 
-    const queryEmbedding = await this.embeddingModel.embedding(query);
+      const queryEmbedding = await this.embeddingModel.embedding(query);
+      // ... (中略: queryEmbeddingString の生成) ...
+      const queryEmbeddingString = `[${Array.from(queryEmbedding).join(',')}]`;
 
-    if (!queryEmbedding) {
-      throw new Error("Embedding data missing for search query.");
-    }
+      // 🔥 LIMIT 句を引数で渡された件数に変更
+      const results = await this.conn.query(`
+              SELECT 
+                  content, 
+                  array_distance(embedding, CAST(${queryEmbeddingString} AS FLOAT[${this.DIMENSION}])) AS SIMILARITY_SCORE
+              FROM ${RAG_TABLE_NAME}
+              ORDER BY SIMILARITY_SCORE
+              LIMIT ${limit}; 
+          `);
 
-    const queryEmbeddingString = `[${Array.from(queryEmbedding).join(',')}]`;
-
-    // 🚨 【重要回避策】 型推論ミスを回避するため、配列リテラルを FLOAT[256] に明示的にキャストします。
-    const results = await this.conn.query(`
-            SELECT 
-                content, 
-                array_distance(embedding, CAST(${queryEmbeddingString} AS FLOAT[${this.DIMENSION}])) AS SIMILARITY_SCORE
-            FROM ${RAG_TABLE_NAME}
-            ORDER BY SIMILARITY_SCORE -- 距離が小さい（類似度が高い）順に並べる
-            LIMIT 1;
-        `);
-
-    // 結果セットをシンプルなオブジェクトの配列に変換して返却
-    return results.toArray().map((row: any) => ({
-      content: row.content,
-      similarity_score: parseFloat(row.SIMILARITY_SCORE.toFixed(4))
-    }));
+      // 結果セットをシンプルなオブジェクトの配列に変換して返却
+      return results.toArray().map((row: any) => ({
+        content: row.content,
+        similarity_score: parseFloat(row.SIMILARITY_SCORE.toFixed(4))
+      }));
   }
 
   /**
